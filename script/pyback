@@ -1,0 +1,351 @@
+#!/export/servers/app/python-2.7.10/bin/python
+# -*- coding: utf-8 -*-
+
+import re
+import optparse
+import os
+import sys
+import time
+import logging
+
+from pyback import SysUtil
+from pyback import PyBack
+
+VERSION = "1.0"
+CONF_FILE = "/export/servers/conf/hdfs.cfg"
+COMMANDS = ['put', 'get', 'list', 'du', 'mkdir', 'move', 'delete']
+BASE_USAGE = "%s <%s> [options]" % (sys.argv[0], '|'.join(COMMANDS))
+MSG_USAGE = {
+    'put':  "<local_path> [<dest_path>] | - <dest_path> (streaming mode)",
+    'get':  "<hdfs_path> [<local_path>]",
+    'du': "<hdfs_path>",
+    'list': "<hdfs_path>",
+    'mkdir': "<hdfs_path>",
+    'delete': "<hdfs_path>",
+    'move': "<source_hdfs_path>" "<dest_hdfs_path>",
+}
+
+log = logging.getLogger(__name__)
+
+
+def deal_put(option, args):
+    dis_process = None
+    try:
+        pyback = PyBack.PyBack(config_file=option.config_file)
+        source, dest = args
+        date, sub_dir, store_type = option.date, option.sub_dir, option.store_type
+        dest_file = pyback.get_format_dest_file(source, dest, date, sub_dir, store_type)
+
+        if option.get_path_only:
+            print dest_file
+            return True
+
+        log.warning("Put file to %s" % dest_file)
+        # 显示进度子进程
+        if option.process:
+            source_size = SysUtil.get_file_size(source, 'local')
+            dis_process = SysUtil.start_child_process(func=display_process,
+                                                      args=(pyback, dest_file, source_size, 'hdfs'))
+
+        # 上传文件进程
+        res = pyback.put(source, dest, date, sub_dir, store_type)
+
+    except Exception, e:
+        log.error("Got unexcept error: %s" % e)
+        res = False
+    finally:
+        if dis_process:
+            dis_process.terminate()
+            SysUtil.put_stderr("\n")
+
+    return res
+
+
+def deal_get(option, args):
+    dis_process = None
+    try:
+        pyback = PyBack.PyBack(config_file=option.config_file)
+        dis_process = None
+        source, dest = args
+        if not dest:
+            dest_file = os.path.join(os.getcwd(), os.path.basename(source))
+        else:
+            if os.path.isdir(dest):
+                dest_file = os.path.join(dest, os.path.basename(source))
+            else:
+                dest_file = dest
+        log.warning("Get file to %s" % dest_file)
+
+        # 显示进度子进程
+        if option.process:
+            source_size = SysUtil.get_file_size(source, 'hdfs', pyback)
+            dis_process = SysUtil.start_child_process(func=display_process,
+                                                      args=(pyback, dest_file, source_size, 'local'))
+
+        # 拉取文件进程
+        res = pyback.get(source, dest)
+
+    except Exception, e:
+        log.error("Got unexcept error: %s" % e)
+        res = False
+    finally:
+        if dis_process:
+            dis_process.terminate()
+            SysUtil.put_stderr("\n")
+
+    return res
+
+
+def deal_du(option, args):
+    pyback = PyBack.PyBack(config_file=option.config_file)
+    filename, = args
+    size = pyback.du(filename)
+    if size is not None and re.match(r'^\d+$', str(size)):
+        if option.human_readable:
+            print SysUtil.add_unit(size, 'bytes')
+        else:
+            print size
+
+        return True
+
+    return False
+
+
+def deal_list(option, args):
+    pyback = PyBack.PyBack(config_file=option.config_file)
+    filename, = args
+    list_info = pyback.list(filename)
+    if list_info:
+        print_format_status(list_info, filename, option.human_readable)
+        return True
+    return False
+
+
+def deal_mkdir(option, args):
+    pyback = PyBack.PyBack(config_file=option.config_file)
+    path, = args
+    return pyback.mkdir(path)
+
+
+def deal_delete(option, args):
+    pyback = PyBack.PyBack(config_file=option.config_file)
+    path, = args
+    return pyback.delete(path)
+
+
+def deal_move(option, args):
+    pyback = PyBack.PyBack(config_file=option.config_file)
+    source, dest = args
+    return pyback.move(source, dest)
+
+
+def print_format_status(list_status, path, human_readable=False):
+    for file_status in list_status:
+        type_sign = "d" if file_status.type.upper() == "DIRECTORY" else "-"
+        perm_sign = SysUtil.get_permission_sign(file_status.permission)
+        owner = file_status.owner
+        group = file_status.group
+        size = file_status.length
+        if human_readable:
+            size = SysUtil.add_unit(size, 'bytes')
+        mtime = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(float(file_status.modificationTime)/1000))
+        path_suffix = file_status.pathSuffix
+        if path_suffix:
+            file_path = os.path.join(path, path_suffix)
+        else:
+            file_path = path
+        log.warning("%s\t%-15s\t%s\t%-15s%-100s" % (type_sign+perm_sign, owner+':'+group, mtime, size, file_path))
+
+
+def put_file_process(pyback, source, dest, date, sub_dir, store_type):
+    try:
+        res = pyback.put(source, dest, date, sub_dir, store_type)
+        exitcode = 0 if res else 255
+    except Exception, e:
+        log.error("Got unexcept when put file error: %s" % e)
+        exitcode = 255
+    sys.exit(exitcode)
+
+
+def get_file_process(pyback, source, dest):
+    try:
+        res = pyback.get(source, dest)
+        exitcode = 0 if res else 255
+    except Exception, e:
+        log.error("Got unexcept when get file error: %s" % e)
+        exitcode = 255
+    sys.exit(exitcode)
+
+
+def display_process(pyback, dest_file, source_size, dest_type):
+    last_size = 0
+    last_time = SysUtil.get_now_time()
+    check_interval = 3
+    while True:
+        now_time = SysUtil.get_now_time()
+        now_size = SysUtil.get_file_size(dest_file, dest_type, pyback)
+        if not now_size:
+            time.sleep(check_interval)
+            continue
+        speed = (now_size - last_size) / (SysUtil.tv_interval(last_time, now_time))
+        SysUtil.put_stderr("\rspeed: %sB/s" % (SysUtil.add_unit(speed), ))
+        if source_size:
+            percent = (now_size * 100) / source_size
+            SysUtil.put_stderr("        percent: %s%%" % percent)
+
+        # last_size = now_size
+        # last_time = now_time
+        time.sleep(check_interval)
+
+
+def execute_from_command_line():
+    init_logger()
+    cmd = get_cmd()
+    option, args = get_options(cmd)
+
+    if cmd in COMMANDS:
+        func = eval('deal_' + cmd)
+        try:
+            res = func(option, args)
+        except Exception, e:
+            log.error("Got unexcept error: %s" % e)
+            res = False
+    else:
+        res = None
+
+    if res is True:
+        sys.exit(0)
+    else:
+        sys.exit(255)
+
+
+def init_logger():
+    logger = logging.getLogger()
+    for handler in logger.handlers:
+        if isinstance(handler, logging.StreamHandler):
+            return
+    ch = logging.StreamHandler()
+    formatter = logging.Formatter('%(message)s')
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
+
+
+def usage(cmd=None, parser=None):
+    log.warning(BASE_USAGE)
+    if cmd:
+        log.warning(MSG_USAGE[cmd])
+    if parser:
+        parser.print_help()
+    sys.exit(1)
+
+
+def get_options(cmd):
+    msg_version = VERSION  # 版本号 -v, --version
+    msg_usage = BASE_USAGE
+    parser = optparse.OptionParser(usage=msg_usage, version=msg_version)
+    parser.add_option('--conf', '-c', help='The config file for hdfs setting',  dest='config_file',
+                      default=CONF_FILE, metavar='FILE')
+    parser.add_option('--debug', default=False, action='store_true', help='debug model')
+
+    if cmd == 'put':
+        min_args_num = 1
+        expect_args_num = 2
+
+        parser.add_option('--date', '-d', help='The backup date', default=SysUtil.get_today_date(), metavar='STR')
+        parser.add_option('--host', '-H', help='The backup host', default=SysUtil.get_local_address(), metavar='STR')
+        parser.add_option('--store-type', '-t', help='The backup store type [online|archive]', default='online', metavar='STR')
+        parser.add_option('--sub-dir', '-s', help='The backup sub dir', default='', metavar='STR')
+        parser.add_option('--process', '-p', help='Print the process', default=False, action='store_true')
+        parser.add_option('--get-path-only', '-f', help='Get the real file path', default=False, action='store_true')
+        option, args = parser.parse_args()
+        args = create_args(args, min_args_num, expect_args_num)
+        if args is False:
+            parser.print_help()
+            sys.exit(1)
+    elif cmd == 'get':
+        min_args_num = 1
+        expect_args_num = 2
+
+        parser.add_option('--process', '-p', help='Print the process', default=False, action='store_true')
+        option, args = parser.parse_args()
+        args = create_args(args, min_args_num, expect_args_num)
+        if args is False:
+            parser.print_help()
+            sys.exit(1)
+    elif cmd == 'du':
+        min_args_num = 1
+        expect_args_num = 1
+
+        parser.add_option('--human-readable', '-r', help='print sizes in human readable format', default=False, action='store_true')
+        option, args = parser.parse_args()
+        args = create_args(args, min_args_num, expect_args_num)
+        if args is False:
+            parser.print_help()
+            sys.exit(1)
+    elif cmd == 'list':
+        min_args_num = 1
+        expect_args_num = 1
+
+        parser.add_option('--human-readable', '-r', help='print sizes in human readable format', default=False, action='store_true')
+        option, args = parser.parse_args()
+        args = create_args(args, min_args_num, expect_args_num)
+        if args is False:
+            parser.print_help()
+            sys.exit(1)
+    elif cmd == 'delete':
+        min_args_num = 1
+        expect_args_num = 1
+
+        option, args = parser.parse_args()
+        args = create_args(args, min_args_num, expect_args_num)
+        if args is False:
+            parser.print_help()
+            sys.exit(1)
+    elif cmd == 'mkdir':
+        min_args_num = 1
+        expect_args_num = 1
+
+        option, args = parser.parse_args()
+        args = create_args(args, min_args_num, expect_args_num)
+        if args is False:
+            parser.print_help()
+            sys.exit(1)
+    elif cmd == 'move':
+        min_args_num = 2
+        expect_args_num = 2
+
+        option, args = parser.parse_args()
+        args = create_args(args, min_args_num, expect_args_num)
+        if args is False:
+            parser.print_help()
+            sys.exit(1)
+
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+    return option, args
+
+
+def create_args(args, min, expect):
+    if len(args) < min or len(args) > expect:
+        return False
+    else:
+        while len(args) < expect:
+            args += [None]
+        return args
+
+
+def get_cmd():
+    if len(sys.argv) < 2:
+        usage()
+        sys.exit(1)
+
+    cmd = sys.argv[1]
+    del sys.argv[1]
+
+    return cmd
+
+
+if __name__ == "__main__":
+    execute_from_command_line()
