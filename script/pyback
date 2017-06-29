@@ -1,4 +1,4 @@
-#!/export/servers/app/python-2.7.10/bin/python
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 import re
