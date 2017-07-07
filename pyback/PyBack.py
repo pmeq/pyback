@@ -76,14 +76,21 @@ class PyBack:
 
     def mkdir(self, path):
         res = self.hdfs.mkdir(path)
-        if not path:
+        if not res:
             log.error(self.hdfs.err_msg)
 
         return res
 
     def delete(self, path):
         res = self.hdfs.delete(path)
-        if not path:
+        if not res:
+            log.error(self.hdfs.err_msg)
+
+        return res
+
+    def cat(self, path):
+        res = self.hdfs.cat(path)
+        if not res:
             log.error(self.hdfs.err_msg)
 
         return res

@@ -115,6 +115,36 @@ class HDFS:
             self.err_msg = "Got error when get file: %s" % e
             return False
 
+    def cat(self, path, offset=0):
+        """返回文件句柄"""
+        hdfs_client = self.hdfs_client
+
+        self.__clear_err_msg()
+        total_size = 0
+        push_size = 0
+        try:
+            if self.is_file(path):
+                total_size = self.get_size(path)
+
+            fsrc = hdfs_client.open(path, buffersize=BLOCK_SIZE, offset=offset)
+            while push_size < total_size:
+                read_data = fsrc.read(BLOCK_SIZE)
+                sys.stdout.write(read_data)
+                push_size += len(read_data)
+            return True
+        except pyhdfs.HdfsException, err:
+            self.err_msg = "Got hdfs error when cat file: %s" % err.message
+            return False
+        except requests.packages.urllib3.exceptions.ProtocolError, e:
+            if "IncompleteRead" in str(e):
+                log.warning("Got IncompleteRead when get file: %s, retry from offset %s" % (path, push_size))
+                return self.get_to_local(path, push_size)
+            self.err_msg = "Got error when cat file: %s" % e
+            return False
+        except Exception, e:
+            self.err_msg = "Got error when cat file: %s" % e
+            return False
+
     def move(self, source, dest):
         """移动文件"""
         hdfs_client = self.hdfs_client

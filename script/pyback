@@ -13,7 +13,7 @@ from pyback import PyBack
 
 VERSION = "1.0"
 CONF_FILE = "/export/servers/conf/hdfs.cfg"
-COMMANDS = ['put', 'get', 'list', 'du', 'mkdir', 'move', 'delete']
+COMMANDS = ['put', 'get', 'list', 'du', 'mkdir', 'move', 'delete', 'cat']
 BASE_USAGE = "%s <%s> [options]" % (sys.argv[0], '|'.join(COMMANDS))
 MSG_USAGE = {
     'put':  "<local_path> [<dest_path>] | - <dest_path> (streaming mode)",
@@ -23,6 +23,7 @@ MSG_USAGE = {
     'mkdir': "<hdfs_path>",
     'delete': "<hdfs_path>",
     'move': "<source_hdfs_path>" "<dest_hdfs_path>",
+    'cat': "<hdfs_path>",
 }
 
 log = logging.getLogger(__name__)
@@ -137,6 +138,12 @@ def deal_move(option, args):
     pyback = PyBack.PyBack(config_file=option.config_file)
     source, dest = args
     return pyback.move(source, dest)
+
+
+def deal_cat(option, args):
+    pyback = PyBack.PyBack(config_file=option.config_file)
+    path, = args
+    return pyback.cat(path)
 
 
 def print_format_status(list_status, path, human_readable=False):
@@ -313,6 +320,15 @@ def get_options(cmd):
     elif cmd == 'move':
         min_args_num = 2
         expect_args_num = 2
+
+        option, args = parser.parse_args()
+        args = create_args(args, min_args_num, expect_args_num)
+        if args is False:
+            parser.print_help()
+            sys.exit(1)
+    elif cmd == 'cat':
+        min_args_num = 1
+        expect_args_num = 1
 
         option, args = parser.parse_args()
         args = create_args(args, min_args_num, expect_args_num)
