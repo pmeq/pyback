@@ -121,7 +121,7 @@ class HDFS:
 
         self.__clear_err_msg()
         total_size = 0
-        push_size = 0
+        push_size = offset if offset else 0
         try:
             if self.is_file(path):
                 total_size = self.get_size(path)
